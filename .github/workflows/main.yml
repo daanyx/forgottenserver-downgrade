@@ -1,0 +1,64 @@
+name: Windows Build  
+  
+on:  
+  push:  
+    branches: [ main, master ]  
+  pull_request:  
+    branches: [ main, master ]  
+  
+jobs:  
+  build-windows:  
+    runs-on: windows-2022  
+      
+    steps:  
+    - name: Checkout code  
+      uses: actions/checkout@v4  
+      with:  
+        submodules: recursive  
+        fetch-depth: 0  
+      
+    - name: Setup MSBuild  
+      uses: microsoft/setup-msbuild@v2  
+      
+    - name: Setup vcpkg  
+      uses: lukka/run-vcpkg@v11  
+      with:  
+        vcpkgGitCommitId: '215a2535590f1f63788ac9bd2ed58ad15e6afdff'  
+      
+    - name: Configure CMake  
+      run: |  
+        cmake -B build -S . `  
+          -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake" `  
+          -DVCPKG_TARGET_TRIPLET=x64-windows `  
+          -DCMAKE_BUILD_TYPE=Release `  
+          -DHTTP=ON `  
+          -DUSE_LUAJIT=OFF `  
+          -DBUILD_TESTING=OFF `  
+          -DSKIP_GIT=OFF  
+      
+    - name: Build project  
+      run: |  
+        cmake --build build --config Release --parallel  
+      
+    - name: Verify build output  
+      run: |  
+        if (Test-Path "build/Release/tfs.exe") {  
+          Write-Host "✅ Build successful - tfs.exe created"  
+          $file = Get-Item "build/Release/tfs.exe"  
+          Write-Host "File size: $($file.Length) bytes"  
+          Write-Host "Created: $($file.LastWriteTime)"  
+        } else {  
+          Write-Error "❌ Build failed - tfs.exe not found"  
+          Get-ChildItem build -Recurse -Name "*.exe" | Write-Host  
+          exit 1  
+        }  
+      
+    - name: Upload build artifacts  
+      uses: actions/upload-artifact@v4  
+      with:  
+        name: tfs-windows-x64-${{ github.sha }}  
+        path: |  
+          build/Release/tfs.exe  
+          build/Release/*.dll  
+        retention-days: 30  
+        if-no-files-found: error
