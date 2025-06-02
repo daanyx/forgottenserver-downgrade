@@ -17,9 +17,6 @@ jobs:
         submodules: recursive  
         fetch-depth: 0  
       
-    - name: Setup MSBuild  
-      uses: microsoft/setup-msbuild@v2  
-      
     - name: Setup vcpkg  
       uses: lukka/run-vcpkg@v11  
       with:  
@@ -27,14 +24,7 @@ jobs:
       
     - name: Configure CMake  
       run: |  
-        cmake -B build -S . `  
-          -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake" `  
-          -DVCPKG_TARGET_TRIPLET=x64-windows `  
-          -DCMAKE_BUILD_TYPE=Release `  
-          -DHTTP=ON `  
-          -DUSE_LUAJIT=OFF `  
-          -DBUILD_TESTING=OFF `  
-          -DSKIP_GIT=OFF  
+        cmake -B build -S . -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x64-windows -DCMAKE_BUILD_TYPE=Release -DHTTP=ON -DUSE_LUAJIT=OFF -DBUILD_TESTING=OFF -DSKIP_GIT=OFF  
       
     - name: Build project  
       run: |  
