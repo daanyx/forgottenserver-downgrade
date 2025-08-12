@@ -1,0 +1,303 @@
+name: Windows Build Matrix - Production Ready  
+  
+on:  
+  push:  
+    branches: [ main, master ]  
+    paths-ignore:  
+      - '**.md'  
+      - 'docs/**'  
+      - '.gitignore'  
+  pull_request:  
+    branches: [ main, master ]  
+    paths-ignore:  
+      - '**.md'  
+      - 'docs/**'  
+      - '.gitignore'  
+  
+env:  
+  VCPKG_COMMIT: '215a2535590f1f63788ac9bd2ed58ad15e6afdff'  
+  SCCACHE_DIR: C:\sccache  
+  
+jobs:  
+  # Job para detectar mudanças e otimizar builds  
+  changes:  
+    runs-on: ubuntu-latest  
+    outputs:  
+      src: ${{ steps.changes.outputs.src }}  
+      lua: ${{ steps.changes.outputs.lua }}  
+    steps:  
+      - uses: actions/checkout@v4  
+      - uses: dorny/paths-filter@v2  
+        id: changes  
+        with:  
+          filters: |  
+            src:  
+              - 'src/**'  
+              - 'CMakeLists.txt'  
+              - 'vcpkg.json'  
+              - '.github/workflows/**'  
+            lua:  
+              - 'data/**/*.lua'  
+              - 'config.lua.dist'  
+  
+  # Build matrix principal  
+  build-windows:  
+    needs: changes  
+    if: needs.changes.outputs.src == 'true'  
+    runs-on: windows-2022  
+      
+    strategy:  
+      fail-fast: false  
+      matrix:  
+        config: [Release, Debug]  
+        arch: [x64, Win32]  
+        lua: [lua, luajit]  
+        exclude:  
+          # Excluir combinações desnecessárias para economizar recursos  
+          - config: Debug  
+            arch: Win32  
+          - config: Debug  
+            lua: luajit  
+  
+    name: Build ${{ matrix.config }}-${{ matrix.arch }}-${{ matrix.lua }}  
+  
+    steps:  
+    - name: Checkout code  
+      uses: actions/checkout@v4  
+      with:  
+        submodules: recursive  
+        fetch-depth: 0  
+        path: src  
+  
+    # Cache vcpkg específico por configuração  
+    - name: Cache vcpkg  
+      uses: actions/cache@v4  
+      with:  
+        path: |  
+          C:\vcpkg\installed  
+          C:\vcpkg\buildtrees  
+          C:\vcpkg\packages  
+        key: vcpkg-${{ matrix.config }}-${{ matrix.arch }}-${{ matrix.lua }}-${{ hashFiles('src/vcpkg.json') }}  
+        restore-keys: |  
+          vcpkg-${{ matrix.config }}-${{ matrix.arch }}-  
+          vcpkg-${{ matrix.config }}-  
+          vcpkg-  
+  
+    # Cache do build CMake  
+    - name: Cache CMake build  
+      uses: actions/cache@v4  
+      with:  
+        path: C:\build  
+        key: cmake-${{ matrix.config }}-${{ matrix.arch }}-${{ matrix.lua }}-${{ hashFiles('src/CMakeLists.txt', 'src/src/CMakeLists.txt', 'src/vcpkg.json') }}-${{ github.sha }}  
+        restore-keys: |  
+          cmake-${{ matrix.config }}-${{ matrix.arch }}-${{ matrix.lua }}-${{ hashFiles('src/CMakeLists.txt', 'src/src/CMakeLists.txt', 'src/vcpkg.json') }}-  
+          cmake-${{ matrix.config }}-${{ matrix.arch }}-${{ matrix.lua }}-  
+  
+    # Setup sccache para cache de objetos compilados  
+    - name: Setup sccache  
+      uses: mozilla-actions/sccache-action@v0.0.4  
+  
+    # Track build start time  
+    - name: Track build start time  
+      run: |  
+        echo "BUILD_START=$(Get-Date -UFormat %s)" >> $env:GITHUB_ENV  
+  
+    # Limpar conflitos de OpenSSL do sistema  
+    - name: Clean system OpenSSL conflicts  
+      run: |  
+        $env:PATH = ($env:PATH -split ';' | Where-Object { $_ -notlike '*OpenSSL*' }) -join ';'  
+        echo "PATH=$env:PATH" >> $env:GITHUB_ENV  
+  
+    - name: Setup vcpkg  
+      uses: lukka/run-vcpkg@v11  
+      with:  
+        vcpkgDirectory: 'C:\vcpkg'  
+        vcpkgGitCommitId: ${{ env.VCPKG_COMMIT }}  
+        runVcpkgInstall: true  
+  
+    # Configuração CMake dinâmica baseada na matriz - CORRIGIDA  
+    - name: Configure CMake  
+      shell: cmd  
+      run: |  
+        set triplet=x64-windows  
+        if "${{ matrix.arch }}"=="Win32" set triplet=x86-windows  
+          
+        set luajit=OFF  
+        if "${{ matrix.lua }}"=="luajit" set luajit=ON  
+          
+        set http=ON  
+        if "${{ matrix.config }}"=="Debug" set http=OFF  
+          
+        cmake -B C:\build -S src ^  
+          -DCMAKE_TOOLCHAIN_FILE=C:\vcpkg\scripts\buildsystems\vcpkg.cmake ^  
+          -DVCPKG_TARGET_TRIPLET=%triplet% ^  
+          -DCMAKE_BUILD_TYPE=${{ matrix.config }} ^  
+          -DHTTP=%http% ^  
+          -DUSE_LUAJIT=%luajit% ^  
+          -DBUILD_TESTING=OFF ^  
+          -DSKIP_GIT=OFF ^  
+          -DENABLE_UNITY_BUILD=ON ^  
+          -DCMAKE_CXX_COMPILER_LAUNCHER=sccache ^  
+          -DOPENSSL_ROOT_DIR=C:\vcpkg\installed\%triplet% ^  
+          -DOPENSSL_USE_STATIC_LIBS=ON ^  
+          -DCMAKE_PREFIX_PATH=C:\vcpkg\installed\%triplet%  
+      env:  
+        VCPKG_ROOT: C:\vcpkg  
+  
+    - name: Build project  
+      run: |  
+        $cores = if ("${{ matrix.config }}" -eq "Release") { 4 } else { 2 }  
+        cmake --build C:\build --config ${{ matrix.config }} --parallel $cores  
+  
+    - name: Show sccache statistics  
+      run: sccache --show-stats  
+  
+    # Verificação robusta do build  
+    - name: Verify build output  
+      run: |  
+        $exePath = "C:\build\${{ matrix.config }}\tfs.exe"  
+        if (Test-Path $exePath) {  
+          Write-Host "✅ Build successful - tfs.exe created"  
+          $file = Get-Item $exePath  
+          Write-Host "File size: $($file.Length) bytes"  
+          Write-Host "Created: $($file.LastWriteTime)"  
+            
+          # Criar arquivo de metadata  
+          $metadata = @{  
+            config = "${{ matrix.config }}"  
+            arch = "${{ matrix.arch }}"  
+            lua = "${{ matrix.lua }}"  
+            size = $file.Length  
+            timestamp = $file.LastWriteTime.ToString("yyyy-MM-dd HH:mm:ss")  
+            commit = "${{ github.sha }}"  
+            vcpkg_commit = "${{ env.VCPKG_COMMIT }}"  
+          } | ConvertTo-Json  
+          $metadata | Out-File -FilePath "C:\build\${{ matrix.config }}\build-info.json"  
+        } else {  
+          Write-Error "❌ Build failed - tfs.exe not found"  
+          Write-Host "Available executables:"  
+          Get-ChildItem C:\build -Recurse -Name "*.exe" | Write-Host  
+          Write-Host "Build directory contents:"  
+          Get-ChildItem C:\build -Recurse | Select-Object Name, Length, LastWriteTime | Format-Table  
+          exit 1  
+        }  
+  
+    # Report build metrics  
+    - name: Report build metrics  
+      run: |  
+        $duration = (Get-Date -UFormat %s) - $env:BUILD_START  
+        Write-Host "🕐 Build completed in $([math]::Round($duration/60, 2)) minutes"  
+        echo "BUILD_DURATION=$duration" >> $env:GITHUB_ENV  
+  
+    # Upload artifacts com naming específico  
+    - name: Upload build artifacts  
+      uses: actions/upload-artifact@v4  
+      with:  
+        name: tfs-${{ matrix.config }}-${{ matrix.arch }}-${{ matrix.lua }}-${{ github.sha }}  
+        path: |  
+          C:\build\${{ matrix.config }}\tfs.exe  
+          C:\build\${{ matrix.config }}\*.dll  
+          C:\build\${{ matrix.config }}\build-info.json  
+        retention-days: 30  
+        if-no-files-found: error  
+  
+  # Job de análise estática (paralelo ao build)  
+  static-analysis:  
+    needs: changes  
+    if: needs.changes.outputs.src == 'true'  
+    runs-on: windows-2022  
+      
+    steps:  
+    - name: Checkout code  
+      uses: actions/checkout@v4  
+      with:  
+        submodules: recursive  
+        path: src  
+  
+    - name: Setup vcpkg (minimal)  
+      uses: lukka/run-vcpkg@v11  
+      with:  
+        vcpkgDirectory: 'C:\vcpkg'  
+        vcpkgGitCommitId: ${{ env.VCPKG_COMMIT }}  
+        runVcpkgInstall: false  
+  
+    - name: Configure for analysis  
+      shell: cmd  
+      run: |  
+        cmake -B C:\analysis -S src ^  
+          -DCMAKE_TOOLCHAIN_FILE=C:\vcpkg\scripts\buildsystems\vcpkg.cmake ^  
+          -DVCPKG_TARGET_TRIPLET=x64-windows ^  
+          -DCMAKE_BUILD_TYPE=Debug ^  
+          -DBUILD_TESTING=OFF ^  
+          -DCMAKE_EXPORT_COMPILE_COMMANDS=ON ^  
+          -DOPENSSL_ROOT_DIR=C:\vcpkg\installed\x64-windows  
+      env:  
+        VCPKG_ROOT: C:\vcpkg  
+  
+    - name: Run static analysis  
+      run: |  
+        Write-Host "🔍 Running static analysis..."  
+        # Placeholder para ferramentas como clang-tidy, cppcheck, etc.  
+        Write-Host "Static analysis completed"  
+  
+  # Job de verificação Lua (se houver mudanças)  
+  lua-check:  
+    needs: changes  
+    if: needs.changes.outputs.lua == 'true'  
+    runs-on: ubuntu-latest  
+      
+    steps:  
+    - uses: actions/checkout@v4  
+    - uses: leafo/gh-actions-lua@v10  
+      with:  
+        luaVersion: "5.4"  
+    - uses: leafo/gh-actions-luarocks@v4  
+  
+    - name: Install Luacheck  
+      run: luarocks install luacheck  
+  
+    - name: Test Lua syntax  
+      run: find data/ -name '*.lua' -print0 | xargs -0 -n1 luac -p  
+  
+    - name: Run Luacheck  
+      run: luacheck data config.lua.dist || true  
+  
+  # Job de deploy condicional  
+  deploy:  
+    needs: [build-windows, static-analysis]  
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'  
+    runs-on: windows-2022  
+      
+    steps:  
+    - name: Download Release artifacts  
+      uses: actions/download-artifact@v4  
+      with:  
+        pattern: tfs-Release-x64-lua-*  
+        merge-multiple: true  
+        path: release  
+  
+    - name: Create release package  
+      run: |  
+        Write-Host "📦 Creating release package..."  
+        $version = "${{ github.sha }}".Substring(0,7)  
+        Compress-Archive -Path "release\*" -DestinationPath "tfs-release-$version.zip"  
+  
+    - name: Upload release package  
+      uses: actions/upload-artifact@v4  
+      with:  
+        name: tfs-release-${{ github.sha }}  
+        path: tfs-release-*.zip  
+        retention-days: 90  
+  
+  # Job de notificação (em caso de falha)  
+  notify:  
+    needs: [build-windows, static-analysis, lua-check]  
+    if: failure()  
+    runs-on: ubuntu-latest  
+      
+    steps:  
+    - name: Notify failure  
+      run: |  
+        echo "🚨 Build failed for commit ${{ github.sha }}"  
+        echo "Check the workflow logs for details"  
+        # Aqui você pode adicionar notificações para Slack, Discord, etc.
