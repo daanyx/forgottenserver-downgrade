@@ -1,4 +1,4 @@
-name: Windows Build - Simplified  
+name: Windows Build - Simplified x
   
 on:  
   push:  
