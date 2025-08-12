@@ -1,0 +1,89 @@
+name: Windows Build - Universal  *
+  
+on:  
+  push:  
+  pull_request:  
+  
+jobs:  
+  build:  
+    runs-on: windows-2022  
+    timeout-minutes: 90  
+  
+    steps:  
+    - name: Checkout  
+      uses: actions/checkout@v4  
+      with:  
+        submodules: recursive  
+        path: src  
+  
+    - name: Cache vcpkg  
+      uses: actions/cache@v4  
+      with:  
+        path: |  
+          C:\vcpkg\installed  
+          C:\vcpkg\buildtrees  
+        key: vcpkg-v2-${{ hashFiles('src/vcpkg.json') }}  
+        restore-keys: vcpkg-v2-  
+  
+    - name: Setup sccache  
+      uses: mozilla-actions/sccache-action@v0.0.4  
+  
+    - name: Setup vcpkg  
+      uses: lukka/run-vcpkg@v11  
+      with:  
+        vcpkgDirectory: 'C:\vcpkg'  
+        vcpkgGitCommitId: '215a2535590f1f63788ac9bd2ed58ad15e6afdff'  
+        runVcpkgInstall: true  
+  
+    - name: Configure CMake  
+      run: |  
+        cmake -B C:\build -S src -DCMAKE_TOOLCHAIN_FILE=C:\vcpkg\scripts\buildsystems\vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x64-windows -DCMAKE_BUILD_TYPE=Release -DHTTP=ON -DUSE_LUAJIT=OFF -DBUILD_TESTING=OFF -DENABLE_UNITY_BUILD=ON -DCMAKE_CXX_COMPILER_LAUNCHER=sccache -DOPENSSL_ROOT_DIR=C:\vcpkg\installed\x64-windows  
+      env:  
+        VCPKG_ROOT: C:\vcpkg  
+  
+    - name: Build  
+      run: |  
+        $cores = if ("${{ github.ref_name }}" -eq "main" -or "${{ github.ref_name }}" -eq "master") { 4 } else { 2 }  
+        cmake --build C:\build --config Release --parallel $cores  
+  
+    - name: Create build info  
+      run: |  
+        @{  
+          branch = "${{ github.ref_name }}"  
+          commit = "${{ github.sha }}"  
+          build_time = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"  
+          vcpkg_commit = "215a2535590f1f63788ac9bd2ed58ad15e6afdff"  
+        } | ConvertTo-Json | Out-File "C:\build\Release\build-info.txt"  
+  
+    - name: Verify and health check  
+      run: |  
+        if (Test-Path "C:\build\Release\tfs.exe") {  
+          Write-Host "✅ Build successful on branch: ${{ github.ref_name }}"  
+          $file = Get-Item "C:\build\Release\tfs.exe"  
+          Write-Host "File size: $([math]::Round($file.Length/1MB, 2)) MB"  
+            
+          if ($file.Length -gt 1MB) {  
+            Write-Host "✅ Executable appears healthy"  
+          } else {  
+            Write-Warning "⚠️ Executable seems unusually small"  
+          }  
+            
+          $dlls = Get-ChildItem "C:\build\Release\*.dll" -ErrorAction SilentlyContinue  
+          if ($dlls) {  
+            Write-Host "📦 Dependencies: $($dlls.Count) DLLs"  
+          }  
+        } else {  
+          Write-Error "❌ Build failed"  
+          exit 1  
+        }  
+  
+    - name: Upload artifacts  
+      uses: actions/upload-artifact@v4  
+      with:  
+        name: tfs-${{ github.ref_name }}-${{ github.sha }}  
+        path: |  
+          C:\build\Release\tfs.exe  
+          C:\build\Release\*.dll  
+          C:\build\Release\build-info.txt  
+        retention-days: 30  
+        if-no-files-found: warn
