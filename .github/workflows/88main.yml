@@ -1,0 +1,125 @@
+name: Windows Build - Ultra Fast  
+  
+on:  
+  push:  
+    paths-ignore:  
+      - '**.md'  
+      - 'docs/**'  
+      - 'README*'  
+      - 'LICENSE'  
+  pull_request:  
+    paths-ignore:  
+      - '**.md'  
+      - 'docs/**'  
+      - 'README*'  
+      - 'LICENSE'  
+  
+jobs:  
+  build:  
+    runs-on: windows-2022  
+    timeout-minutes: 60  # Reduzido de 90  
+  
+    steps:  
+    - name: Checkout  
+      uses: actions/checkout@v4  
+      with:  
+        submodules: recursive  
+        path: src  
+  
+    # Cache agressivo multi-layer  
+    - name: Cache vcpkg binaries  
+      uses: actions/cache@v4  
+      with:  
+        path: |  
+          C:\vcpkg\installed  
+          C:\vcpkg\buildtrees  
+          C:\vcpkg\packages  
+        key: vcpkg-ultra-${{ hashFiles('src/vcpkg.json') }}  
+        restore-keys: vcpkg-ultra-  
+  
+    - name: Cache build objects  
+      uses: actions/cache@v4  
+      with:  
+        path: |  
+          C:\build  
+          C:\sccache  
+        key: build-ultra-${{ github.ref_name }}-${{ hashFiles('src/**/*.cpp', 'src/**/*.h') }}  
+        restore-keys: |  
+          build-ultra-${{ github.ref_name }}-  
+          build-ultra-main-  
+  
+    # Setup sccache com configurações agressivas  
+    - name: Setup ultra sccache  
+      uses: mozilla-actions/sccache-action@v0.0.4  
+      with:  
+        version: "latest"  
+  
+    - name: Configure sccache  
+      run: |  
+        sccache --set-config cache.size=15G  
+        sccache --set-config cache.compression=true  
+        sccache --set-config cache.preprocessor_cache_mode=true  
+  
+    # vcpkg com binary caching  
+    - name: Setup vcpkg with binary cache  
+      uses: lukka/run-vcpkg@v11  
+      with:  
+        vcpkgDirectory: 'C:\vcpkg'  
+        vcpkgGitCommitId: '215a2535590f1f63788ac9bd2ed58ad15e6afdff'  
+        runVcpkgInstall: true  
+      env:  
+        VCPKG_FEATURE_FLAGS: "binarycaching"  
+        VCPKG_BINARY_SOURCES: "clear;files,C:\vcpkg-cache,readwrite"  
+  
+    # Configuração CMake ultra-otimizada  
+    - name: Configure CMake Ultra  
+      run: |  
+        $cores = [Environment]::ProcessorCount  
+        cmake -B C:\build -S src `  
+          -DCMAKE_TOOLCHAIN_FILE=C:\vcpkg\scripts\buildsystems\vcpkg.cmake `  
+          -DVCPKG_TARGET_TRIPLET=x64-windows `  
+          -DCMAKE_BUILD_TYPE=Release `  
+          -DHTTP=ON `  
+          -DUSE_LUAJIT=OFF `  
+          -DBUILD_TESTING=OFF `  
+          -DENABLE_UNITY_BUILD=ON `  
+          -DCMAKE_UNITY_BUILD_BATCH_SIZE=32 `  
+          -DCMAKE_CXX_COMPILER_LAUNCHER=sccache `  
+          -DCMAKE_PCH_INSTANTIATE_TEMPLATES=ON `  
+          -DOPENSSL_ROOT_DIR=C:\vcpkg\installed\x64-windows `  
+          -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF  
+      env:  
+        VCPKG_ROOT: C:\vcpkg  
+  
+    # Build com máximo paralelismo  
+    - name: Ultra Build  
+      run: |  
+        $cores = [Environment]::ProcessorCount  
+        Write-Host "Using $cores cores for compilation"  
+        cmake --build C:\build --config Release --parallel $cores  
+  
+    - name: Show cache stats  
+      run: |  
+        sccache --show-stats  
+        Write-Host "Cache hit ratio should be >80% for optimal performance"  
+  
+    - name: Quick verify  
+      run: |  
+        if (Test-Path "C:\build\Release\tfs.exe") {  
+          $file = Get-Item "C:\build\Release\tfs.exe"  
+          Write-Host "✅ Build successful: $([math]::Round($file.Length/1MB, 1)) MB"  
+        } else {  
+          Write-Error "❌ Build failed"  
+          exit 1  
+        }  
+  
+    - name: Upload compressed artifacts  
+      run: |  
+        Compress-Archive -Path "C:\build\Release\*" -DestinationPath "C:\build\tfs-ultra.zip" -CompressionLevel Optimal  
+  
+    - name: Upload artifacts  
+      uses: actions/upload-artifact@v4  
+      with:  
+        name: tfs-ultra-${{ github.ref_name }}-${{ github.sha }}  
+        path: C:\build\tfs-ultra.zip  
+        retention-days: 30
