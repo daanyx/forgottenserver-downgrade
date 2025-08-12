@@ -1,0 +1,79 @@
+name: Windows Build - Simplified  
+  
+on:  
+  push:  
+    branches: [ main, master ]  
+  pull_request:  
+    branches: [ main, master ]  
+  
+jobs:  
+  build:  
+    runs-on: windows-2022  
+  
+    steps:  
+    - name: Checkout  
+      uses: actions/checkout@v4  
+      with:  
+        submodules: recursive  
+        path: src  
+  
+    # Cache essencial do vcpkg  
+    - name: Cache vcpkg  
+      uses: actions/cache@v4  
+      with:  
+        path: |  
+          C:\vcpkg\installed  
+          C:\vcpkg\buildtrees  
+        key: vcpkg-${{ hashFiles('src/vcpkg.json') }}  
+        restore-keys: vcpkg-  
+  
+    # Setup sccache para acelerar compilação  
+    - name: Setup sccache  
+      uses: mozilla-actions/sccache-action@v0.0.4  
+  
+    - name: Setup vcpkg  
+      uses: lukka/run-vcpkg@v11  
+      with:  
+        vcpkgDirectory: 'C:\vcpkg'  
+        vcpkgGitCommitId: '215a2535590f1f63788ac9bd2ed58ad15e6afdff'  
+        runVcpkgInstall: true  
+  
+    # Configuração CMake simplificada  
+    - name: Configure CMake  
+      run: |  
+        cmake -B C:\build -S src -DCMAKE_TOOLCHAIN_FILE=C:\vcpkg\scripts\buildsystems\vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x64-windows -DCMAKE_BUILD_TYPE=Release -DHTTP=ON -DUSE_LUAJIT=OFF -DBUILD_TESTING=OFF -DENABLE_UNITY_BUILD=ON -DCMAKE_CXX_COMPILER_LAUNCHER=sccache -DOPENSSL_ROOT_DIR=C:\vcpkg\installed\x64-windows  
+      env:  
+        VCPKG_ROOT: C:\vcpkg  
+  
+    - name: Build  
+      run: cmake --build C:\build --config Release --parallel 4  
+  
+    - name: Verify  
+      run: |  
+        if (Test-Path "C:\build\Release\tfs.exe") {  
+          Write-Host "✅ Build successful"  
+          $file = Get-Item "C:\build\Release\tfs.exe"  
+          Write-Host "File size: $($file.Length) bytes"  
+            
+          # Listar DLLs encontradas  
+          $dlls = Get-ChildItem "C:\build\Release\*.dll" -ErrorAction SilentlyContinue  
+          if ($dlls) {  
+            Write-Host "📦 DLLs found: $($dlls.Count)"  
+            $dlls | ForEach-Object { Write-Host "  - $($_.Name)" }  
+          } else {  
+            Write-Host "⚠️ No DLLs found in Release directory"  
+          }  
+        } else {  
+          Write-Error "❌ Build failed"  
+          exit 1  
+        }  
+  
+    - name: Upload artifacts  
+      uses: actions/upload-artifact@v4  
+      with:  
+        name: tfs-${{ github.sha }}  
+        path: |  
+          C:\build\Release\tfs.exe  
+          C:\build\Release\*.dll  
+        retention-days: 30  
+        if-no-files-found: warn
