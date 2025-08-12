@@ -1,4 +1,4 @@
-name: Windows Build - Ultra Fast  
+name: Windows Build - Universal Enhanced  
   
 on:  
   push:  
@@ -17,7 +17,7 @@ on:
 jobs:  
   build:  
     runs-on: windows-2022  
-    timeout-minutes: 60  # Reduzido de 90  
+    timeout-minutes: 90  
   
     steps:  
     - name: Checkout  
@@ -26,100 +26,123 @@ jobs:
         submodules: recursive  
         path: src  
   
-    # Cache agressivo multi-layer  
-    - name: Cache vcpkg binaries  
+    - name: Cache vcpkg  
       uses: actions/cache@v4  
       with:  
         path: |  
           C:\vcpkg\installed  
           C:\vcpkg\buildtrees  
-          C:\vcpkg\packages  
-        key: vcpkg-ultra-${{ hashFiles('src/vcpkg.json') }}  
-        restore-keys: vcpkg-ultra-  
+        key: vcpkg-v3-${{ hashFiles('src/vcpkg.json') }}  
+        restore-keys: vcpkg-v3-  
   
-    - name: Cache build objects  
+    - name: Cache build directory  
       uses: actions/cache@v4  
       with:  
-        path: |  
-          C:\build  
-          C:\sccache  
-        key: build-ultra-${{ github.ref_name }}-${{ hashFiles('src/**/*.cpp', 'src/**/*.h') }}  
+        path: C:\build  
+        key: build-${{ github.ref_name }}-${{ hashFiles('src/**/*.cpp', 'src/**/*.h') }}  
         restore-keys: |  
-          build-ultra-${{ github.ref_name }}-  
-          build-ultra-main-  
+          build-${{ github.ref_name }}-  
+          build-main-  
   
-    # Setup sccache com configurações agressivas  
-    - name: Setup ultra sccache  
-      uses: mozilla-actions/sccache-action@v0.0.4  
-      with:  
-        version: "latest"  
+    # Setup sccache CORRIGIDO - usando versão mais recente  
+    - name: Setup sccache  
+      uses: mozilla-actions/sccache-action@v0.0.5  
   
-    - name: Configure sccache  
-      run: |  
-        sccache --set-config cache.size=15G  
-        sccache --set-config cache.compression=true  
-        sccache --set-config cache.preprocessor_cache_mode=true  
-  
-    # vcpkg com binary caching  
-    - name: Setup vcpkg with binary cache  
+    - name: Setup vcpkg  
       uses: lukka/run-vcpkg@v11  
       with:  
         vcpkgDirectory: 'C:\vcpkg'  
         vcpkgGitCommitId: '215a2535590f1f63788ac9bd2ed58ad15e6afdff'  
         runVcpkgInstall: true  
-      env:  
-        VCPKG_FEATURE_FLAGS: "binarycaching"  
-        VCPKG_BINARY_SOURCES: "clear;files,C:\vcpkg-cache,readwrite"  
   
-    # Configuração CMake ultra-otimizada  
-    - name: Configure CMake Ultra  
+    - name: Configure CMake  
       run: |  
-        $cores = [Environment]::ProcessorCount  
-        cmake -B C:\build -S src `  
-          -DCMAKE_TOOLCHAIN_FILE=C:\vcpkg\scripts\buildsystems\vcpkg.cmake `  
-          -DVCPKG_TARGET_TRIPLET=x64-windows `  
-          -DCMAKE_BUILD_TYPE=Release `  
-          -DHTTP=ON `  
-          -DUSE_LUAJIT=OFF `  
-          -DBUILD_TESTING=OFF `  
-          -DENABLE_UNITY_BUILD=ON `  
-          -DCMAKE_UNITY_BUILD_BATCH_SIZE=32 `  
-          -DCMAKE_CXX_COMPILER_LAUNCHER=sccache `  
-          -DCMAKE_PCH_INSTANTIATE_TEMPLATES=ON `  
-          -DOPENSSL_ROOT_DIR=C:\vcpkg\installed\x64-windows `  
-          -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF  
+        cmake -B C:\build -S src -DCMAKE_TOOLCHAIN_FILE=C:\vcpkg\scripts\buildsystems\vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x64-windows -DCMAKE_BUILD_TYPE=Release -DHTTP=ON -DUSE_LUAJIT=OFF -DBUILD_TESTING=OFF -DENABLE_UNITY_BUILD=ON -DCMAKE_CXX_COMPILER_LAUNCHER=sccache -DOPENSSL_ROOT_DIR=C:\vcpkg\installed\x64-windows  
       env:  
         VCPKG_ROOT: C:\vcpkg  
   
-    # Build com máximo paralelismo  
-    - name: Ultra Build  
+    - name: Build  
       run: |  
-        $cores = [Environment]::ProcessorCount  
-        Write-Host "Using $cores cores for compilation"  
+        $cores = if ("${{ github.ref_name }}" -eq "main" -or "${{ github.ref_name }}" -eq "master") { 4 } else { 2 }  
         cmake --build C:\build --config Release --parallel $cores  
   
-    - name: Show cache stats  
-      run: |  
-        sccache --show-stats  
-        Write-Host "Cache hit ratio should be >80% for optimal performance"  
+    - name: Show sccache statistics  
+      run: sccache --show-stats  
   
-    - name: Quick verify  
+    - name: Validate dependencies  
+      run: |  
+        $requiredDlls = @("libmariadb.dll")  
+        $missingDlls = @()  
+          
+        foreach ($dll in $requiredDlls) {  
+          if (-not (Test-Path "C:\build\Release\$dll")) {  
+            $missingDlls += $dll  
+          }  
+        }  
+          
+        if ($missingDlls.Count -gt 0) {  
+          Write-Warning "Missing DLLs: $($missingDlls -join ', ')"  
+        } else {  
+          Write-Host "✅ All required dependencies found"  
+        }  
+  
+    - name: Create build info  
+      run: |  
+        @{  
+          branch = "${{ github.ref_name }}"  
+          commit = "${{ github.sha }}"  
+          build_time = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"  
+          vcpkg_commit = "215a2535590f1f63788ac9bd2ed58ad15e6afdff"  
+        } | ConvertTo-Json | Out-File "C:\build\Release\build-info.txt"  
+  
+    - name: Verify and health check  
       run: |  
         if (Test-Path "C:\build\Release\tfs.exe") {  
+          Write-Host "✅ Build successful on branch: ${{ github.ref_name }}"  
           $file = Get-Item "C:\build\Release\tfs.exe"  
-          Write-Host "✅ Build successful: $([math]::Round($file.Length/1MB, 1)) MB"  
+          Write-Host "File size: $([math]::Round($file.Length/1MB, 2)) MB"  
+            
+          if ($file.Length -gt 1MB) {  
+            Write-Host "✅ Executable appears healthy"  
+          } else {  
+            Write-Warning "⚠️ Executable seems unusually small"  
+          }  
+            
+          $dlls = Get-ChildItem "C:\build\Release\*.dll" -ErrorAction SilentlyContinue  
+          if ($dlls) {  
+            Write-Host "📦 Dependencies: $($dlls.Count) DLLs"  
+            $dlls | ForEach-Object { Write-Host "  - $($_.Name)" }  
+          }  
         } else {  
           Write-Error "❌ Build failed"  
           exit 1  
         }  
   
-    - name: Upload compressed artifacts  
+    - name: Compress artifacts  
       run: |  
-        Compress-Archive -Path "C:\build\Release\*" -DestinationPath "C:\build\tfs-ultra.zip" -CompressionLevel Optimal  
+        Compress-Archive -Path "C:\build\Release\*" -DestinationPath "C:\build\tfs-release.zip"  
   
     - name: Upload artifacts  
       uses: actions/upload-artifact@v4  
       with:  
-        name: tfs-ultra-${{ github.ref_name }}-${{ github.sha }}  
-        path: C:\build\tfs-ultra.zip  
-        retention-days: 30
+        name: tfs-${{ github.ref_name }}-${{ github.sha }}  
+        path: C:\build\tfs-release.zip  
+        retention-days: 30  
+  
+    - name: Cleanup build artifacts  
+      if: always()  
+      run: |  
+        Remove-Item -Path "C:\build\CMakeFiles" -Recurse -Force -ErrorAction SilentlyContinue  
+        Remove-Item -Path "C:\build\*.tmp" -Force -ErrorAction SilentlyContinue  
+  
+    - name: Build status summary  
+      if: always()  
+      run: |  
+        Write-Host "🔧 Build Summary for branch: ${{ github.ref_name }}"  
+        Write-Host "📅 Timestamp: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"  
+        Write-Host "🔗 Commit: ${{ github.sha }}"  
+        if (Test-Path "C:\build\Release\tfs.exe") {  
+          Write-Host "✅ Status: SUCCESS"  
+        } else {  
+          Write-Host "❌ Status: FAILED"  
+        }
