@@ -8,6 +8,8 @@
 #include "definitions.h"
 
 // System headers required in headers should be included here.
+#include "lua.hpp"
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -32,11 +34,6 @@
 #include <iostream>
 #include <limits>
 #include <list>
-#ifdef _WIN32
-#include "lua.hpp"
-#elif defined(__linux__)
-#include "lua5.4/lua.hpp"
-#endif
 #include <map>
 #include <memory>
 #include <mutex>
