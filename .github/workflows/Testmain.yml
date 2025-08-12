@@ -1,0 +1,166 @@
+name: Windows Build Optimized  
+  
+on:  
+  push:  
+    branches: [ main, master ]  
+  pull_request:  
+    branches: [ main, master ]  
+  
+jobs:  
+  build-windows:  
+    runs-on: windows-2022  
+  
+    steps:  
+    - name: Checkout code  
+      uses: actions/checkout@v4  
+      with:  
+        submodules: recursive  
+        fetch-depth: 0  
+        path: src  
+  
+    # Cache vcpkg para reduzir tempo de compilação drasticamente  
+    - name: Cache vcpkg  
+      uses: actions/cache@v4  
+      with:  
+        path: |  
+          C:\vcpkg\installed  
+          C:\vcpkg\buildtrees  
+          C:\vcpkg\packages  
+        key: vcpkg-${{ runner.os }}-${{ hashFiles('src/vcpkg.json') }}  
+        restore-keys: |  
+          vcpkg-${{ runner.os }}-  
+  
+    # Cache do build CMake para builds incrementais  
+    - name: Cache CMake build  
+      uses: actions/cache@v4  
+      with:  
+        path: C:\build  
+        key: cmake-build-${{ runner.os }}-${{ hashFiles('src/CMakeLists.txt', 'src/src/CMakeLists.txt', 'src/vcpkg.json') }}-${{ github.sha }}  
+        restore-keys: |  
+          cmake-build-${{ runner.os }}-${{ hashFiles('src/CMakeLists.txt', 'src/src/CMakeLists.txt', 'src/vcpkg.json') }}-  
+          cmake-build-${{ runner.os }}-  
+  
+    # Setup sccache para cache de objetos compilados  
+    - name: Setup sccache  
+      uses: mozilla-actions/sccache-action@v0.0.4  
+  
+    - name: Setup vcpkg with short path  
+      uses: lukka/run-vcpkg@v11  
+      with:  
+        vcpkgDirectory: 'C:\vcpkg'  
+        vcpkgGitCommitId: '215a2535590f1f63788ac9bd2ed58ad15e6afdff'  
+        runVcpkgInstall: true  
+  
+    - name: Configure CMake with optimizations  
+      run: |  
+        cmake -B C:\build -S src `  
+          -DCMAKE_TOOLCHAIN_FILE=C:\vcpkg\scripts\buildsystems\vcpkg.cmake `  
+          -DVCPKG_TARGET_TRIPLET=x64-windows `  
+          -DCMAKE_BUILD_TYPE=Release `  
+          -DHTTP=ON `  
+          -DUSE_LUAJIT=OFF `  
+          -DBUILD_TESTING=OFF `  
+          -DSKIP_GIT=OFF `  
+          -DENABLE_UNITY_BUILD=ON `  
+          -DCMAKE_CXX_COMPILER_LAUNCHER=sccache  
+      env:  
+        VCPKG_ROOT: C:\vcpkg  
+        SCCACHE_DIR: C:\sccache  
+  
+    - name: Build project with parallel compilation  
+      run: |  
+        cmake --build C:\build --config Release --parallel 4  
+      env:  
+        SCCACHE_DIR: C:\sccache  
+  
+    - name: Show sccache statistics  
+      run: sccache --show-stats  
+  
+    - name: Verify build output  
+      run: |  
+        if (Test-Path "C:\build\Release\tfs.exe") {  
+          Write-Host "✅ Build successful - tfs.exe created"  
+          $file = Get-Item "C:\build\Release\tfs.exe"  
+          Write-Host "File size: $($file.Length) bytes"  
+          Write-Host "Created: $($file.LastWriteTime)"  
+        } else {  
+          Write-Error "❌ Build failed - tfs.exe not found"  
+          Write-Host "Available executables:"  
+          Get-ChildItem C:\build -Recurse -Name "*.exe" | Write-Host  
+          Write-Host "Build directory contents:"  
+          Get-ChildItem C:\build -Recurse | Select-Object Name, Length, LastWriteTime | Format-Table  
+          exit 1  
+        }  
+  
+    - name: Upload build artifacts  
+      uses: actions/upload-artifact@v4  
+      with:  
+        name: tfs-windows-x64-${{ github.sha }}  
+        path: |  
+          C:\build\Release\tfs.exe  
+          C:\build\Release\*.dll  
+        retention-days: 30  
+        if-no-files-found: error  
+        
+  # Job adicional para build de desenvolvimento (opcional)  
+  build-windows-dev:  
+    runs-on: windows-2022  
+    if: github.event_name == 'pull_request'  
+  
+    steps:  
+    - name: Checkout code  
+      uses: actions/checkout@v4  
+      with:  
+        submodules: recursive  
+        fetch-depth: 0  
+        path: src  
+  
+    - name: Cache vcpkg (dev)  
+      uses: actions/cache@v4  
+      with:  
+        path: |  
+          C:\vcpkg\installed  
+          C:\vcpkg\buildtrees  
+        key: vcpkg-dev-${{ runner.os }}-${{ hashFiles('src/vcpkg.json') }}  
+        restore-keys: |  
+          vcpkg-dev-${{ runner.os }}-  
+          vcpkg-${{ runner.os }}-  
+  
+    - name: Setup sccache  
+      uses: mozilla-actions/sccache-action@v0.0.4  
+  
+    - name: Setup vcpkg with short path  
+      uses: lukka/run-vcpkg@v11  
+      with:  
+        vcpkgDirectory: 'C:\vcpkg'  
+        vcpkgGitCommitId: '215a2535590f1f63788ac9bd2ed58ad15e6afdff'  
+        runVcpkgInstall: true  
+  
+    # Build de desenvolvimento mais rápido - sem HTTP, com LuaJIT  
+    - name: Configure CMake (Fast Dev Build)  
+      run: |  
+        cmake -B C:\build -S src `  
+          -DCMAKE_TOOLCHAIN_FILE=C:\vcpkg\scripts\buildsystems\vcpkg.cmake `  
+          -DVCPKG_TARGET_TRIPLET=x64-windows `  
+          -DCMAKE_BUILD_TYPE=Debug `  
+          -DHTTP=OFF `  
+          -DUSE_LUAJIT=ON `  
+          -DBUILD_TESTING=OFF `  
+          -DSKIP_GIT=ON `  
+          -DENABLE_UNITY_BUILD=ON `  
+          -DCMAKE_CXX_COMPILER_LAUNCHER=sccache  
+      env:  
+        VCPKG_ROOT: C:\vcpkg  
+  
+    - name: Build project (Dev)  
+      run: |  
+        cmake --build C:\build --config Debug --parallel 4  
+  
+    - name: Verify dev build  
+      run: |  
+        if (Test-Path "C:\build\Debug\tfs.exe") {  
+          Write-Host "✅ Dev build successful"  
+        } else {  
+          Write-Error "❌ Dev build failed"  
+          exit 1  
+        }
