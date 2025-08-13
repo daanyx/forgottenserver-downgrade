@@ -1,4 +1,4 @@
-name: (vc177) Complete  
+name: Windows Build - Visual Studio (vc17) Complete  
   
 on:  
   push:  
@@ -18,7 +18,6 @@ jobs:
     - name: Setup MSBuild  
       uses: microsoft/setup-msbuild@v2  
   
-    # Cache do vcpkg para acelerar builds subsequentes  
     - name: Cache vcpkg  
       uses: actions/cache@v4  
       with:  
