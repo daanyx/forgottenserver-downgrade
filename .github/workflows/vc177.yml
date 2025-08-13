@@ -1,0 +1,188 @@
+name: (vc177) Complete  
+  
+on:  
+  push:  
+  pull_request:  
+  
+jobs:  
+  build:  
+    runs-on: windows-2022  
+    timeout-minutes: 90  
+  
+    steps:  
+    - name: Checkout  
+      uses: actions/checkout@v4  
+      with:  
+        submodules: recursive  
+  
+    - name: Setup MSBuild  
+      uses: microsoft/setup-msbuild@v2  
+  
+    # Cache do vcpkg para acelerar builds subsequentes  
+    - name: Cache vcpkg  
+      uses: actions/cache@v4  
+      with:  
+        path: |  
+          C:\vcpkg\installed  
+          C:\vcpkg\buildtrees  
+        key: vcpkg-msbuild-${{ hashFiles('vcpkg.json') }}-${{ runner.os }}  
+        restore-keys: |  
+          vcpkg-msbuild-${{ hashFiles('vcpkg.json') }}-  
+          vcpkg-msbuild-  
+  
+    - name: Setup vcpkg  
+      uses: lukka/run-vcpkg@v11  
+      with:  
+        vcpkgDirectory: 'C:\vcpkg'  
+        vcpkgGitCommitId: '215a2535590f1f63788ac9bd2ed58ad15e6afdff'  
+        runVcpkgInstall: true  
+  
+    - name: Integrate vcpkg with Visual Studio  
+      run: C:\vcpkg\vcpkg.exe integrate install  
+  
+    - name: Notify Build Start  
+      run: Write-Host "🚀 Starting MSBuild for branch: ${{ github.ref_name }}"  
+  
+    - name: Build with MSBuild (Release x64)  
+      run: |  
+        $cores = if ("${{ github.ref_name }}" -eq "main" -or "${{ github.ref_name }}" -eq "master") { 4 } else { 2 }  
+        msbuild vc17\theforgottenserver.sln /p:Configuration=Release /p:Platform=x64 /p:VcpkgEnableManifest=true /m:$cores  
+      env:  
+        VCPKG_ROOT: C:\vcpkg  
+  
+    - name: Collect Runtime Dependencies  
+      run: |  
+        Write-Host "📦 Collecting dependencies from vcpkg..."  
+          
+        # Copiar DLLs específicas do Boost  
+        $boostDlls = @(  
+          "boost_iostreams-vc143-mt-x64-*.dll",  
+          "boost_system-vc143-mt-x64-*.dll",   
+          "boost_filesystem-vc143-mt-x64-*.dll",  
+          "boost_locale-vc143-mt-x64-*.dll"  
+        )  
+          
+        foreach ($pattern in $boostDlls) {  
+          Copy-Item "C:\vcpkg\installed\x64-windows\bin\$pattern" "vc17\x64\Release\" -ErrorAction SilentlyContinue  
+        }  
+          
+        # Copiar outras DLLs críticas  
+        $criticalDlls = @(  
+          "libcrypto-*.dll",  
+          "libssl-*.dll",   
+          "libmariadb.dll",  
+          "zlib*.dll",  
+          "fmt.dll"  
+        )  
+          
+        foreach ($pattern in $criticalDlls) {  
+          Copy-Item "C:\vcpkg\installed\x64-windows\bin\$pattern" "vc17\x64\Release\" -ErrorAction SilentlyContinue  
+        }  
+          
+        # Listar DLLs coletadas  
+        $collectedDlls = Get-ChildItem "vc17\x64\Release\*.dll" -ErrorAction SilentlyContinue  
+        Write-Host "✅ Collected $($collectedDlls.Count) DLLs:"  
+        $collectedDlls | ForEach-Object { Write-Host "  - $($_.Name)" }  
+  
+    - name: Copy Configuration Files  
+      run: |  
+        # Copiar arquivos de configuração para o diretório do executável  
+        Copy-Item "config.lua.dist" "vc17\x64\Release\" -Force  
+        Copy-Item "key.pem" "vc17\x64\Release\" -Force -ErrorAction SilentlyContinue  
+          
+        # Copiar diretório data se existir  
+        if (Test-Path "data") {  
+          Copy-Item "data" "vc17\x64\Release\" -Recurse -Force  
+          Write-Host "✅ Data directory copied"  
+        }  
+          
+        # Verificar se os arquivos foram copiados  
+        if (Test-Path "vc17\x64\Release\config.lua.dist") {  
+          Write-Host "✅ config.lua.dist copied successfully"  
+        } else {  
+          Write-Warning "❌ Failed to copy config.lua.dist"  
+        }  
+  
+    - name: Check Missing Dependencies  
+      run: |  
+        $requiredDlls = @("boost_iostreams", "boost_system", "libcrypto", "libssl", "libmariadb")  
+        $missing = @()  
+          
+        foreach ($dll in $requiredDlls) {  
+          if (-not (Get-ChildItem "vc17\x64\Release\$dll*.dll" -ErrorAction SilentlyContinue)) {  
+            $missing += $dll  
+          }  
+        }  
+          
+        if ($missing.Count -gt 0) {  
+          Write-Warning "⚠️ Potentially missing DLLs: $($missing -join ', ')"  
+        } else {  
+          Write-Host "✅ All critical DLLs found"  
+        }  
+  
+    - name: Basic Executable Test  
+      run: |  
+        $exe = "vc17\x64\Release\theforgottenserver-x64.exe"  
+        if (Test-Path $exe) {  
+          # Verificar se o arquivo não está vazio ou corrompido  
+          $fileInfo = Get-Item $exe  
+          if ($fileInfo.Length -lt 1MB) {  
+            Write-Warning "⚠️ Executable seems unusually small: $($fileInfo.Length) bytes"  
+          }  
+            
+          Write-Host "✅ Executable appears healthy: $([math]::Round($fileInfo.Length/1MB, 2)) MB"  
+        }  
+  
+    - name: Create Detailed Build Info  
+      run: |  
+        @{  
+          branch = "${{ github.ref_name }}"  
+          commit = "${{ github.sha }}"  
+          build_time = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss UTC')"  
+          vcpkg_commit = "215a2535590f1f63788ac9bd2ed58ad15e6afdff"  
+          build_type = "msbuild_release_x64"  
+          runner_os = "${{ runner.os }}"  
+          workflow_run_id = "${{ github.run_id }}"  
+          dependencies_count = (Get-ChildItem "vc17\x64\Release\*.dll" -ErrorAction SilentlyContinue).Count  
+          unity_build_enabled = $true  
+          precompiled_headers = $true  
+        } | ConvertTo-Json -Depth 3 | Out-File "vc17\x64\Release\build-info.json"  
+  
+    - name: Verify Build Output  
+      run: |  
+        $exePath = "vc17\x64\Release\theforgottenserver-x64.exe"  
+        if (Test-Path $exePath) {  
+          Write-Host "✅ Build successful: theforgottenserver-x64.exe"  
+          $file = Get-Item $exePath  
+          Write-Host "📊 File size: $([math]::Round($file.Length/1MB, 2)) MB"  
+            
+          # Contar DLLs incluídas  
+          $dlls = Get-ChildItem "vc17\x64\Release\*.dll" -ErrorAction SilentlyContinue  
+          Write-Host "📦 Runtime dependencies: $($dlls.Count) DLLs"  
+            
+          # Verificar arquivos de configuração  
+          if (Test-Path "vc17\x64\Release\config.lua.dist") {  
+            Write-Host "✅ Configuration files ready"  
+          }  
+        } else {  
+          Write-Error "❌ Build failed - executable not found"  
+          exit 1  
+        }  
+  
+    - name: Notify Build Success  
+      if: success()  
+      run: Write-Host "✅ Build completed successfully for ${{ github.ref_name }}"  
+  
+    - name: Upload Artifacts  
+      uses: actions/upload-artifact@v4  
+      with:  
+        name: theforgottenserver-x64-${{ github.ref_name }}-${{ github.run_number }}  
+        path: |  
+          vc17/x64/Release/theforgottenserver-x64.exe  
+          vc17/x64/Release/*.dll  
+          vc17/x64/Release/build-info.json  
+          vc17/x64/Release/config.lua.dist  
+          vc17/x64/Release/key.pem  
+          vc17/x64/Release/data/  
+        retention-days: 7  
+        if-no-files-found: warn
