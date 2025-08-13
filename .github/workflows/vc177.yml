@@ -1,4 +1,4 @@
-name: Windows Build - Visual Studio (vc17) Complete  
+name: Windows Build - Visual Studio Complete  
   
 on:  
   push:  
@@ -40,9 +40,9 @@ jobs:
       run: C:\vcpkg\vcpkg.exe integrate install  
   
     - name: Notify Build Start  
-      run: Write-Host "🚀 Starting MSBuild for branch: ${{ github.ref_name }}"  
+      run: Write-Host "🚀 Starting MSBuild for branch ${{ github.ref_name }}"  
   
-    - name: Build with MSBuild (Release x64)  
+    - name: Build with MSBuild  
       run: |  
         $cores = if ("${{ github.ref_name }}" -eq "main" -or "${{ github.ref_name }}" -eq "master") { 4 } else { 2 }  
         msbuild vc17\theforgottenserver.sln /p:Configuration=Release /p:Platform=x64 /p:VcpkgEnableManifest=true /m:$cores  
@@ -53,7 +53,6 @@ jobs:
       run: |  
         Write-Host "📦 Collecting dependencies from vcpkg..."  
           
-        # Copiar DLLs específicas do Boost  
         $boostDlls = @(  
           "boost_iostreams-vc143-mt-x64-*.dll",  
           "boost_system-vc143-mt-x64-*.dll",   
@@ -65,7 +64,6 @@ jobs:
           Copy-Item "C:\vcpkg\installed\x64-windows\bin\$pattern" "vc17\x64\Release\" -ErrorAction SilentlyContinue  
         }  
           
-        # Copiar outras DLLs críticas  
         $criticalDlls = @(  
           "libcrypto-*.dll",  
           "libssl-*.dll",   
@@ -78,24 +76,20 @@ jobs:
           Copy-Item "C:\vcpkg\installed\x64-windows\bin\$pattern" "vc17\x64\Release\" -ErrorAction SilentlyContinue  
         }  
           
-        # Listar DLLs coletadas  
         $collectedDlls = Get-ChildItem "vc17\x64\Release\*.dll" -ErrorAction SilentlyContinue  
-        Write-Host "✅ Collected $($collectedDlls.Count) DLLs:"  
+        Write-Host "✅ Collected $($collectedDlls.Count) DLLs"  
         $collectedDlls | ForEach-Object { Write-Host "  - $($_.Name)" }  
   
     - name: Copy Configuration Files  
       run: |  
-        # Copiar arquivos de configuração para o diretório do executável  
         Copy-Item "config.lua.dist" "vc17\x64\Release\" -Force  
         Copy-Item "key.pem" "vc17\x64\Release\" -Force -ErrorAction SilentlyContinue  
           
-        # Copiar diretório data se existir  
         if (Test-Path "data") {  
           Copy-Item "data" "vc17\x64\Release\" -Recurse -Force  
           Write-Host "✅ Data directory copied"  
         }  
           
-        # Verificar se os arquivos foram copiados  
         if (Test-Path "vc17\x64\Release\config.lua.dist") {  
           Write-Host "✅ config.lua.dist copied successfully"  
         } else {  
@@ -123,18 +117,16 @@ jobs:
       run: |  
         $exe = "vc17\x64\Release\theforgottenserver-x64.exe"  
         if (Test-Path $exe) {  
-          # Verificar se o arquivo não está vazio ou corrompido  
           $fileInfo = Get-Item $exe  
           if ($fileInfo.Length -lt 1MB) {  
             Write-Warning "⚠️ Executable seems unusually small: $($fileInfo.Length) bytes"  
           }  
-            
           Write-Host "✅ Executable appears healthy: $([math]::Round($fileInfo.Length/1MB, 2)) MB"  
         }  
   
-    - name: Create Detailed Build Info  
+    - name: Create Build Info  
       run: |  
-        @{  
+        $buildInfo = @{  
           branch = "${{ github.ref_name }}"  
           commit = "${{ github.sha }}"  
           build_time = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss UTC')"  
@@ -145,7 +137,8 @@ jobs:
           dependencies_count = (Get-ChildItem "vc17\x64\Release\*.dll" -ErrorAction SilentlyContinue).Count  
           unity_build_enabled = $true  
           precompiled_headers = $true  
-        } | ConvertTo-Json -Depth 3 | Out-File "vc17\x64\Release\build-info.json"  
+        }  
+        $buildInfo | ConvertTo-Json -Depth 3 | Out-File "vc17\x64\Release\build-info.json"  
   
     - name: Verify Build Output  
       run: |  
@@ -155,11 +148,9 @@ jobs:
           $file = Get-Item $exePath  
           Write-Host "📊 File size: $([math]::Round($file.Length/1MB, 2)) MB"  
             
-          # Contar DLLs incluídas  
           $dlls = Get-ChildItem "vc17\x64\Release\*.dll" -ErrorAction SilentlyContinue  
           Write-Host "📦 Runtime dependencies: $($dlls.Count) DLLs"  
             
-          # Verificar arquivos de configuração  
           if (Test-Path "vc17\x64\Release\config.lua.dist") {  
             Write-Host "✅ Configuration files ready"  
           }  
