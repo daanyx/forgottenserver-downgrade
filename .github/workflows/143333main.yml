@@ -1,0 +1,81 @@
+name: Windows Build - MSBuild Simple with Cache  143
+  
+on:  
+  push:  
+  pull_request:  
+  
+jobs:  
+  build:  
+    runs-on: windows-2022  
+    timeout-minutes: 60  
+  
+    steps:  
+    - name: Checkout  
+      uses: actions/checkout@v4  
+      with:  
+        submodules: recursive  
+  
+    - name: Setup MSBuild  
+      uses: microsoft/setup-msbuild@v2  
+  
+    # Cache do vcpkg para acelerar builds subsequentes  
+    - name: Cache vcpkg  
+      uses: actions/cache@v4  
+      with:  
+        path: |  
+          C:\vcpkg\installed  
+          C:\vcpkg\buildtrees  
+        key: vcpkg-msbuild-${{ hashFiles('vcpkg.json') }}-${{ runner.os }}  
+        restore-keys: |  
+          vcpkg-msbuild-${{ hashFiles('vcpkg.json') }}-  
+          vcpkg-msbuild-  
+  
+    - name: Setup vcpkg  
+      uses: lukka/run-vcpkg@v11  
+      with:  
+        vcpkgDirectory: 'C:\vcpkg'  
+        vcpkgGitCommitId: '215a2535590f1f63788ac9bd2ed58ad15e6afdff'  
+        runVcpkgInstall: true  
+  
+    - name: Integrate vcpkg  
+      run: C:\vcpkg\vcpkg.exe integrate install  
+  
+    - name: Build Release x64  
+      run: msbuild vc17\theforgottenserver.sln /p:Configuration=Release /p:Platform=x64 /p:VcpkgEnableManifest=true /m:4  
+      env:  
+        VCPKG_ROOT: C:\vcpkg  
+  
+    - name: Collect Dependencies  
+      run: |  
+        # Copiar DLLs essenciais do vcpkg  
+        Copy-Item "C:\vcpkg\installed\x64-windows\bin\boost_iostreams-vc143-mt-x64-*.dll" "vc17\x64\Release\" -ErrorAction SilentlyContinue  
+        Copy-Item "C:\vcpkg\installed\x64-windows\bin\boost_system-vc143-mt-x64-*.dll" "vc17\x64\Release\" -ErrorAction SilentlyContinue  
+        Copy-Item "C:\vcpkg\installed\x64-windows\bin\boost_filesystem-vc143-mt-x64-*.dll" "vc17\x64\Release\" -ErrorAction SilentlyContinue  
+        Copy-Item "C:\vcpkg\installed\x64-windows\bin\boost_locale-vc143-mt-x64-*.dll" "vc17\x64\Release\" -ErrorAction SilentlyContinue  
+        Copy-Item "C:\vcpkg\installed\x64-windows\bin\libcrypto-*.dll" "vc17\x64\Release\" -ErrorAction SilentlyContinue  
+        Copy-Item "C:\vcpkg\installed\x64-windows\bin\libssl-*.dll" "vc17\x64\Release\" -ErrorAction SilentlyContinue  
+        Copy-Item "C:\vcpkg\installed\x64-windows\bin\libmariadb.dll" "vc17\x64\Release\" -ErrorAction SilentlyContinue  
+        Copy-Item "C:\vcpkg\installed\x64-windows\bin\fmt.dll" "vc17\x64\Release\" -ErrorAction SilentlyContinue  
+        Copy-Item "C:\vcpkg\installed\x64-windows\bin\zlib*.dll" "vc17\x64\Release\" -ErrorAction SilentlyContinue  
+  
+    - name: Verify Build  
+      run: |  
+        if (Test-Path "vc17\x64\Release\theforgottenserver-x64.exe") {  
+          $file = Get-Item "vc17\x64\Release\theforgottenserver-x64.exe"  
+          Write-Host "✅ Build successful: $([math]::Round($file.Length/1MB, 2)) MB"  
+            
+          $dlls = Get-ChildItem "vc17\x64\Release\*.dll" -ErrorAction SilentlyContinue  
+          Write-Host "📦 Dependencies: $($dlls.Count) DLLs"  
+        } else {  
+          Write-Error "❌ Build failed"  
+          exit 1  
+        }  
+  
+    - name: Upload Artifact  
+      uses: actions/upload-artifact@v4  
+      with:  
+        name: theforgottenserver-x64-${{ github.sha }}  
+        path: |  
+          vc17/x64/Release/theforgottenserver-x64.exe  
+          vc17/x64/Release/*.dll  
+        retention-days: 30
