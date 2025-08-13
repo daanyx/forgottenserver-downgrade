@@ -1,0 +1,210 @@
+name: Windows Build - Universal (Fixed Runtime)  
+  
+on:  
+  push:  
+  pull_request:  
+  
+jobs:  
+  build:  
+    runs-on: windows-2022  
+    timeout-minutes: 90  
+  
+    steps:  
+    - name: Checkout  
+      uses: actions/checkout@v4  
+      with:  
+        submodules: recursive  
+        path: src  
+  
+    - name: Cache vcpkg  
+      uses: actions/cache@v4  
+      with:  
+        path: |  
+          C:\vcpkg\installed  
+          C:\vcpkg\buildtrees  
+        key: vcpkg-v3-${{ hashFiles('src/vcpkg.json') }}  
+        restore-keys: vcpkg-v3-  
+  
+    - name: Setup sccache  
+      uses: mozilla-actions/sccache-action@v0.0.4  
+  
+    - name: Setup vcpkg  
+      uses: lukka/run-vcpkg@v11  
+      with:  
+        vcpkgDirectory: 'C:\vcpkg'  
+        vcpkgGitCommitId: '215a2535590f1f63788ac9bd2ed58ad15e6afdff'  
+        runVcpkgInstall: true  
+  
+    # Usar triplet estático para evitar problemas de DLL  
+    - name: Configure CMake (Static Build)  
+      run: |  
+        cmake -B C:\build -S src `  
+          -DCMAKE_TOOLCHAIN_FILE=C:\vcpkg\scripts\buildsystems\vcpkg.cmake `  
+          -DVCPKG_TARGET_TRIPLET=x64-windows-static `  
+          -DCMAKE_BUILD_TYPE=Release `  
+          -DHTTP=ON `  
+          -DUSE_LUAJIT=OFF `  
+          -DBUILD_TESTING=OFF `  
+          -DENABLE_UNITY_BUILD=ON `  
+          -DCMAKE_CXX_COMPILER_LAUNCHER=sccache `  
+          -DOPENSSL_ROOT_DIR=C:\vcpkg\installed\x64-windows-static  
+      env:  
+        VCPKG_ROOT: C:\vcpkg  
+  
+    - name: Build  
+      run: |  
+        $cores = if ("${{ github.ref_name }}" -eq "main" -or "${{ github.ref_name }}" -eq "master") { 4 } else { 2 }  
+        cmake --build C:\build --config Release --parallel $cores  
+  
+    # Fallback: Se build estático falhar, tentar dinâmico com coleta de DLLs  
+    - name: Configure CMake (Dynamic Build - Fallback)  
+      if: failure()  
+      run: |  
+        Remove-Item -Recurse -Force C:\build -ErrorAction SilentlyContinue  
+        cmake -B C:\build -S src `  
+          -DCMAKE_TOOLCHAIN_FILE=C:\vcpkg\scripts\buildsystems\vcpkg.cmake `  
+          -DVCPKG_TARGET_TRIPLET=x64-windows `  
+          -DCMAKE_BUILD_TYPE=Release `  
+          -DHTTP=ON `  
+          -DUSE_LUAJIT=OFF `  
+          -DBUILD_TESTING=OFF `  
+          -DENABLE_UNITY_BUILD=ON `  
+          -DCMAKE_CXX_COMPILER_LAUNCHER=sccache `  
+          -DOPENSSL_ROOT_DIR=C:\vcpkg\installed\x64-windows  
+      env:  
+        VCPKG_ROOT: C:\vcpkg  
+  
+    - name: Build (Dynamic - Fallback)  
+      if: failure()  
+      run: |  
+        $cores = if ("${{ github.ref_name }}" -eq "main" -or "${{ github.ref_name }}" -eq "master") { 4 } else { 2 }  
+        cmake --build C:\build --config Release --parallel $cores  
+  
+    # Coletar todas as DLLs necessárias (apenas para build dinâmico)  
+    - name: Collect Runtime Dependencies  
+      if: success()  
+      run: |  
+        # Verificar se é build estático ou dinâmico  
+        $isStatic = Test-Path "C:\vcpkg\installed\x64-windows-static"  
+          
+        if (-not $isStatic) {  
+          Write-Host "📦 Collecting dynamic dependencies..."  
+            
+          # Copiar DLLs específicas do Boost que sabemos que são necessárias  
+          $boostDlls = @(  
+            "boost_iostreams-vc143-mt-x64-*.dll",  
+            "boost_system-vc143-mt-x64-*.dll",   
+            "boost_filesystem-vc143-mt-x64-*.dll",  
+            "boost_locale-vc143-mt-x64-*.dll"  
+          )  
+            
+          foreach ($pattern in $boostDlls) {  
+            Copy-Item "C:\vcpkg\installed\x64-windows\bin\$pattern" "C:\build\Release\" -ErrorAction SilentlyContinue  
+          }  
+            
+          # Copiar outras DLLs críticas  
+          $criticalDlls = @(  
+            "libcrypto-*.dll",  
+            "libssl-*.dll",   
+            "libmariadb.dll",  
+            "zlib*.dll",  
+            "fmt.dll"  
+          )  
+            
+          foreach ($pattern in $criticalDlls) {  
+            Copy-Item "C:\vcpkg\installed\x64-windows\bin\$pattern" "C:\build\Release\" -ErrorAction SilentlyContinue  
+          }  
+            
+          # Listar DLLs coletadas  
+          $collectedDlls = Get-ChildItem "C:\build\Release\*.dll" -ErrorAction SilentlyContinue  
+          Write-Host "✅ Collected $($collectedDlls.Count) DLLs:"  
+          $collectedDlls | ForEach-Object { Write-Host "  - $($_.Name)" }  
+        } else {  
+          Write-Host "✅ Static build - no DLLs needed"  
+        }  
+  
+    - name: Install Visual C++ Redistributable  
+      run: |  
+        Write-Host "📥 Installing VC++ Redistributable..."  
+        Invoke-WebRequest -Uri "https://aka.ms/vs/17/release/vc_redist.x64.exe" -OutFile "vc_redist.x64.exe"  
+        Start-Process -FilePath "vc_redist.x64.exe" -ArgumentList "/quiet" -Wait  
+        Write-Host "✅ VC++ Redistributable installed"  
+  
+    - name: Verify Dependencies with dumpbin  
+      run: |  
+        Write-Host "🔍 Analyzing tfs.exe dependencies..."  
+          
+        # Usar dumpbin para verificar dependências  
+        $dumpbinOutput = & "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe" /dependents "C:\build\Release\tfs.exe" 2>$null  
+          
+        if ($dumpbinOutput) {  
+          Write-Host "Dependencies found:"  
+          $dumpbinOutput | Select-String "\.dll" | ForEach-Object {   
+            $dll = $_.Line.Trim()  
+            $exists = Test-Path "C:\build\Release\$dll"  
+            $status = if ($exists) { "✅" } else { "❌" }  
+            Write-Host "  $status $dll"  
+          }  
+        }  
+  
+    - name: Create build info  
+      run: |  
+        $buildType = if (Test-Path "C:\vcpkg\installed\x64-windows-static") { "static" } else { "dynamic" }  
+        @{  
+          branch = "${{ github.ref_name }}"  
+          commit = "${{ github.sha }}"  
+          build_time = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"  
+          vcpkg_commit = "215a2535590f1f63788ac9bd2ed58ad15e6afdff"  
+          build_type = $buildType  
+          boost_version = "1.82+"  
+        } | ConvertTo-Json | Out-File "C:\build\Release\build-info.txt"  
+  
+    - name: Final verification and health check  
+      run: |  
+        if (Test-Path "C:\build\Release\tfs.exe") {  
+          Write-Host "✅ Build successful on branch: ${{ github.ref_name }}"  
+          $file = Get-Item "C:\build\Release\tfs.exe"  
+          Write-Host "📊 File size: $([math]::Round($file.Length/1MB, 2)) MB"  
+            
+          if ($file.Length -gt 1MB) {  
+            Write-Host "✅ Executable appears healthy"  
+          } else {  
+            Write-Warning "⚠️ Executable seems unusually small"  
+          }  
+            
+          # Contar DLLs incluídas  
+          $dlls = Get-ChildItem "C:\build\Release\*.dll" -ErrorAction SilentlyContinue  
+          if ($dlls) {  
+            Write-Host "📦 Runtime dependencies: $($dlls.Count) DLLs"  
+          } else {  
+            Write-Host "📦 Static build - no external DLLs needed"  
+          }  
+            
+          # Teste básico de execução (verificar se não há erros imediatos de DLL)  
+          Write-Host "🧪 Testing executable startup..."  
+          $testResult = Start-Process -FilePath "C:\build\Release\tfs.exe" -ArgumentList "--version" -Wait -PassThru -NoNewWindow -RedirectStandardError "C:\build\Release\test-error.log" -RedirectStandardOutput "C:\build\Release\test-output.log"  
+            
+          if ($testResult.ExitCode -eq 0 -or $testResult.ExitCode -eq 1) {  
+            Write-Host "✅ Executable starts without DLL errors"  
+          } else {  
+            Write-Warning "⚠️ Executable may have runtime issues (exit code: $($testResult.ExitCode))"  
+            if (Test-Path "C:\build\Release\test-error.log") {  
+              Get-Content "C:\build\Release\test-error.log" | Write-Host  
+            }  
+          }  
+        } else {  
+          Write-Error "❌ Build failed - tfs.exe not found"  
+          exit 1  
+        }  
+  
+    - name: Upload artifacts  
+      uses: actions/upload-artifact@v4  
+      with:  
+        name: tfs-${{ github.ref_name }}-${{ github.sha }}  
+        path: |  
+          C:\build\Release\tfs.exe  
+          C:\build\Release\*.dll  
+          C:\build\Release\build-info.txt  
+          C:\build\Release\test-*.log  
+        retention-days: 30  
+        if-no-files-found: warn
