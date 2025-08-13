@@ -1,4 +1,4 @@
-name: XXWindows Build - Visual Studio (vc17)  
+name: Windows Build - XXVisual Studio (vc17)  
   
 on:  
   push:  
