@@ -1,0 +1,108 @@
+name: Windows Build - Visual Studio (vc17)  
+  
+on:  
+  push:  
+  pull_request:  
+  
+jobs:  
+  build:  
+    runs-on: windows-2022  
+    timeout-minutes: 90  
+  
+    steps:  
+    - name: Checkout  
+      uses: actions/checkout@v4  
+      with:  
+        submodules: recursive  
+  
+    - name: Setup MSBuild  
+      uses: microsoft/setup-msbuild@v2  
+  
+    - name: Setup vcpkg  
+      uses: lukka/run-vcpkg@v11  
+      with:  
+        vcpkgDirectory: 'C:\vcpkg'  
+        vcpkgGitCommitId: '215a2535590f1f63788ac9bd2ed58ad15e6afdff'  
+        runVcpkgInstall: true  
+  
+    - name: Integrate vcpkg with Visual Studio  
+      run: |  
+        C:\vcpkg\vcpkg.exe integrate install  
+  
+    - name: Build with MSBuild (Release x64)  
+      run: |  
+        msbuild vc17\theforgottenserver.sln /p:Configuration=Release /p:Platform=x64 /p:VcpkgEnableManifest=true /m  
+      env:  
+        VCPKG_ROOT: C:\vcpkg  
+  
+    - name: Collect Runtime Dependencies  
+      run: |  
+        Write-Host "📦 Collecting dependencies from vcpkg..."  
+          
+        # Copiar DLLs específicas do Boost  
+        $boostDlls = @(  
+          "boost_iostreams-vc143-mt-x64-*.dll",  
+          "boost_system-vc143-mt-x64-*.dll",   
+          "boost_filesystem-vc143-mt-x64-*.dll",  
+          "boost_locale-vc143-mt-x64-*.dll"  
+        )  
+          
+        foreach ($pattern in $boostDlls) {  
+          Copy-Item "C:\vcpkg\installed\x64-windows\bin\$pattern" "vc17\x64\Release\" -ErrorAction SilentlyContinue  
+        }  
+          
+        # Copiar outras DLLs críticas  
+        $criticalDlls = @(  
+          "libcrypto-*.dll",  
+          "libssl-*.dll",   
+          "libmariadb.dll",  
+          "zlib*.dll",  
+          "fmt.dll"  
+        )  
+          
+        foreach ($pattern in $criticalDlls) {  
+          Copy-Item "C:\vcpkg\installed\x64-windows\bin\$pattern" "vc17\x64\Release\" -ErrorAction SilentlyContinue  
+        }  
+          
+        # Listar DLLs coletadas  
+        $collectedDlls = Get-ChildItem "vc17\x64\Release\*.dll" -ErrorAction SilentlyContinue  
+        Write-Host "✅ Collected $($collectedDlls.Count) DLLs:"  
+        $collectedDlls | ForEach-Object { Write-Host "  - $($_.Name)" }  
+  
+    - name: Create build info  
+      run: |  
+        @{  
+          branch = "${{ github.ref_name }}"  
+          commit = "${{ github.sha }}"  
+          build_time = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"  
+          vcpkg_commit = "215a2535590f1f63788ac9bd2ed58ad15e6afdff"  
+          build_type = "visual_studio_msbuild"  
+          configuration = "Release x64"  
+        } | ConvertTo-Json | Out-File "vc17\x64\Release\build-info.txt"  
+  
+    - name: Verify build output  
+      run: |  
+        $exePath = "vc17\x64\Release\theforgottenserver-x64.exe"  
+        if (Test-Path $exePath) {  
+          Write-Host "✅ Build successful: theforgottenserver-x64.exe"  
+          $file = Get-Item $exePath  
+          Write-Host "📊 File size: $([math]::Round($file.Length/1MB, 2)) MB"  
+            
+          # Contar DLLs incluídas  
+          $dlls = Get-ChildItem "vc17\x64\Release\*.dll" -ErrorAction SilentlyContinue  
+          Write-Host "📦 Runtime dependencies: $($dlls.Count) DLLs"  
+        } else {  
+          Write-Error "❌ Build failed - executable not found"  
+          exit 1  
+        }  
+  
+    - name: Upload artifacts  
+      uses: actions/upload-artifact@v4  
+      with:  
+        name: theforgottenserver-x64-${{ github.ref_name }}-${{ github.sha }}  
+        path: |  
+          vc17/x64/Release/theforgottenserver-x64.exe  
+          vc17/x64/Release/*.dll  
+          vc17/x64/Release/build-info.txt  
+        retention-days: 30  
+        if-no-files-found: warn
